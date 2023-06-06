@@ -1,0 +1,172 @@
+---
+title: "US Crime Model"
+author: "Andrew Brown"
+date: "April 16, 2019"
+output: html_document
+---
+
+#Table of Contents
+1. [Data Acquisition](#DataAcq)
+2. [Data Description](#DataDesc)
+3. [Prediction Goal](#PG)
+4. [GLM](#GLM)
+5. [SVM Model](#SVM)
+6. [Tree Model](#Tree)
+7. [The Best Model](#BM)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loadData, include=FALSE, echo=FALSE}
+#This is all the code we need to set up all our data
+#Read in csv file
+crime <- read.csv("table-2.csv")
+#Remove useless row on bottom
+crime <- crime[-c(133),]
+#Rename columns appropriately
+names(crime) <- c("Region", "Year", "Population", "Violent Crime", "Violent_Crime_per_100k_people", "Murder and nonnegligent manslaughter", "Murder_and_nonnegligent_manslaughter_per_100k_people", "Rape revised definition", "Rape_revised_definition_per_100k_people", "Rape legacy definition", "Rape_legacy_definition_per_100k_people", "Robbery", "Robbery_per_100k_people", "Aggravated assault", "Aggravated_assault_per_100k_people", "Property crime", "Property_crime_per_100k_people", "Burglary", "Burglary_per_100k_people", "Larceny theft", "Larceny_theft_per_100k_people", "Motor vehicle theft", "Motor_vehicle_theft_per_100k_people")
+#Copy the row names so they each match for years 2015 and 2016
+crime[seq(2,132,2),]$Region <- crime[seq(1,131,2),]$Region
+
+#Creates a data frame with only the states crime rates data plus their population (Plus Puerto Rico and D.C.)
+crime_states <- crime[-c(1,2,3,4,5,6,19,20,27,28,29,30,41,42,57,58,59,60,79,80,89,90,99,100,101,102,119,120),]
+crime_states <- crime_states[,c(1,2,3,5,7,9,11,13,15,17,19,21,23)]
+
+require(ROCR)
+require(stringr)
+require(e1071)
+require(tree)
+set.seed(314159265)
+
+#Creating the target column that we will try to predict
+crime_states$Target <- as.integer(crime_states$`Motor_vehicle_theft_per_100k_people` > mean(crime_states$`Motor_vehicle_theft_per_100k_people`))
+
+#Dividing the data into sets
+crime_states$Group <- sample(1:5, nrow(crime_states), replace=TRUE)
+```
+
+## <a name="DataAcq"></a>Data Acquisition
+This data set was found on the Federal Bureau of Investigation's website <https://ucr.fbi.gov/crime-in-the-u.s/2016/crime-in-the-u.s.-2016/topic-pages/tables/table-2>. The FBI used their records of crime in the United States to create the data set and uploaded it online. On the site I clicked the "download excel" button near the top left of the page. I used Microsoft Excel to edit the file and remove some unnecessary information and to convert the file to a csv I could use within R. I have included the csv file along with this report. Finally, I imported the csv file into R and used tools within R to make a few more changes to the data set and make it easier for me to read.
+
+## <a name="DataDesc"></a>Data Description
+This data set is a recording of the number of crimes committed in the United states by crime type and by region. It keeps track of 10 different types of crime: Violent Crime, Murder and Nonnegligent Manslaughter, Rape (revised definition), Rape (legacy definition), Robbery, Aggravated Assault, Property Crime, Burglary, Larceny Theft, and Motor Vehicle Theft. It records the total number of these crimes committed in one year in each of the 50 states (plus Puerto Rico and District of Columbia) as well as the total for the US and the total for 13 bigger regions of the US. The data was recorded for two consecutive years, 2015 and 2016.
+
+## <a name="PG"></a>Prediction Goal
+My goal is to be able to predict whether or not a state's motor vehicle theft rate will be above or below average for the entire United States. I will predict whether or not a state's motor vehicle theft rate is above average by using other data about these states. Such as their crime rates for different types of crime and their population.
+To make these predictions, I will use various types of machine learning. For this project I used 3 different machine learning algorithms: GLM(Generalized Linear Model), SVM(Support Vector Machine), and Tree(A decision tree algorithm). This report will explain each of these algorithms in more detail and show the models I created with them. I will conclude the report by explaining which of the three models worked the best for this data set.
+
+Each machine learning algorithm will be evaluated with a ROC Curve and its ROC AUC. ROC stands for receiver operating characteristic, and it is commonly used in the data science field to evaluate just how good a prediction model is. A ROC curve is created by plotting the prediction model's true positive rate against its false positive rate. In other words, the model's probability of correctly detecting a state with above average motor vehicle theft rate versus its probability of predicting a state's motor vehicle theft rate to be above average when it really isn't.
+For example, consider a poor model such as a coin flip, with a 50% chance of predicting above average and a 50% chance of predicting below average regardless of any data. This model's ROC curve would be an upward sloping straight line. The better a model is, the more it's ROC curve will shift up and to the left, keeping, of course, its ends at (0,0) and (1,1), as all ROC curves do.
+
+Since a ROC curve is a graphic representation of how good a model is, it can be hard to visually compare multiple models who have similar looking curves. That is why this report also uses a number between 0 and 1 called the ROC AUC. This number is created from a model's ROC curve by computing the area under the curve. So, the closer the ROC AUC is to 1, the better the model.
+There is, however, one draw back to strictly trying to create a model with the highest ROC AUC: overfitting. An overfit model is a model trained so specifically that it is able to predict with near 100% accuracy for its data. The problem with this is that when the model is given new, never before seen data, it will predict poorly because it was tailored too specifically to its training data.
+To be able to evaluate how overfit my models are, I break the data into groups, so that some of the data is used to train the model, and then its ROC curve and AUC are calculated. Next, the model is tested on a test group of data it hasn't seen before, and the ROC curve and AUC are calculated. The two AUCs can then be compared to see how overfit the model was.
+
+## <a name="GLM"></a>GLM
+The first model I created was done using a Generalized Linear Model. The model I created makes predictions based on a logistic regression function. I tested this model using every possible combination of parameters available to me from the dataset to find out what the model should use to make its predictions. It ended up using the legacy definition of rape rate and the larceny theft rate. The model's ROC curves and AUCs are shown below.
+```{r GLM, echo=FALSE}
+#GLM model
+modeling_variables <- c("Rape_legacy_definition_per_100k_people", "Larceny_theft_per_100k_people")
+
+for (group in 1:5)
+{
+  train <- crime_states[crime_states$Group != group, c(modeling_variables, "Target")]
+  test <- crime_states[crime_states$Group == group, modeling_variables]
+  
+  model <- glm(Target ~ ., train, family=binomial(link='logit'))
+  
+  crime_states$prediction[crime_states$Group == group] <- predict(model, test, type='response')
+  train$prediction <- predict(model, train)
+}
+
+pr <- ROCR::prediction(crime_states$prediction, crime_states$Target)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="Test Set ROC Curve")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+print(paste("Test Set AUC:", auc))
+
+
+pr <- ROCR::prediction(train$prediction, train$Target)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="Training Set ROC Curve")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+print(paste("Training Set AUC:", auc))
+```
+
+
+
+## <a name="SVM"></a>SVM Model
+The second model I created was done using a Spport Vector Machine model. This type of model draws a line through all the data, attempting to have all the states with above average motor vehicle theft rate on one side of the line, and all the states with below average motor vehicle theft rate on the other side. That way when new data is encountered, the model can predict whether it will be above or below average by which side of the line it appears on. Like I did with the GLM model, I tested all the different combinations of parameters with this SVM model to produce the best ROC I could. The best SVM model I created used these parameters: Population, Violent crime rate, Murder and nonnegligent manslaughter rate, Legacy definition of rape rate, Aggravated assault rate, Burglary rate, and Larceny theft rate. The model's ROC curves and AUCs are shown below.
+```{r SVM, echo=FALSE}
+#SVM Model
+modeling_variables <- c("Population", "Violent_Crime_per_100k_people", "Murder_and_nonnegligent_manslaughter_per_100k_people", "Rape_legacy_definition_per_100k_people", "Aggravated_assault_per_100k_people", "Burglary_per_100k_people", "Larceny_theft_per_100k_people")
+
+for (group in 1:5)
+{
+  train <- crime_states[crime_states$Group != group, c(modeling_variables, "Target")]
+  test <- crime_states[crime_states$Group == group, modeling_variables]
+  
+  model <- svm(Target ~ ., train, cost=10, tolerance =.00001)
+  
+  crime_states$prediction[crime_states$Group == group] <- predict(model, test, type='response')
+  train$prediction <- predict(model, train)
+}
+
+pr <- ROCR::prediction(crime_states$prediction, crime_states$Target)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="Test Set ROC Curve")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+print(paste("Test Set AUC:", auc))
+
+
+pr <- ROCR::prediction(train$prediction, train$Target)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="Training Set ROC Curve")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+print(paste("Training Set AUC:", auc))
+```
+
+
+
+## <a name="Tree"></a>Tree Model
+The third model I created was done using a decision tree model. This type of model creates a tree made of decision splits. The model will take a state through a series of binomial decisions based on the state's parameters in our data set and decide if the state's motor vehicle theft rate is above or below average based on how the state's data answered the binomial questions. For example the first question may be if the state's robbery rate is above or below some specific value, then the next question will be different depending on the answer to the first. This process continues until the model thinks it knows if the state's motor vehicle theft rate is above or below average. The best tree model I created used the parameters of the violent crime rate and the larceny theft rate. The model's ROC curves and AUCs are shown below.
+```{r Tree, echo=FALSE}
+#Tree model
+modeling_variables <- c("Violent_Crime_per_100k_people", "Larceny_theft_per_100k_people")
+
+for (group in 1:5)
+{
+  train <- crime_states[crime_states$Group != group, c(modeling_variables, "Target")]
+  test <- crime_states[crime_states$Group == group, modeling_variables]
+  
+  model <- tree(Target ~ ., train)
+  
+  crime_states$prediction[crime_states$Group == group] <- predict(model, test)
+  train$prediction <- predict(model, train)
+}
+
+pr <- ROCR::prediction(crime_states$prediction, crime_states$Target)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="Test Set ROC Curve")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+print(paste("Test Set AUC:", auc))
+
+
+pr <- ROCR::prediction(train$prediction, train$Target)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf, main="Training Set ROC Curve")
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+print(paste("Training Set AUC:", auc))
+```
+
+
+
+## <a name="BM"></a>The Best Model
+I decided to use the GLM model as the best model for predicting if a state's motor vehicle theft rate would be above or below average. This model did not have the highest ROC AUC on the test set, but it was a close second, and it is hardly overfit, if at all. The SVM model had a slightly higher ROC AUC on the test set than the GLM model, but its ROC AUC on the training set was much higher than its ROC AUC on the test set. This indicated that it was likely too overfit, and that it would not do as well if it were given new data. The tree model had a lower ROC AUC on the test set than the other two models, and it was also pretty overfit. Considering these results, the GLM model I created would be the model I would chose to make a correct prediction on new data.
